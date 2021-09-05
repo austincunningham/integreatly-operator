@@ -18,7 +18,6 @@ func NewObservability(config ProductConfig) *Observability {
 func (m *Observability) GetProductName() integreatlyv1alpha1.ProductName {
 	return integreatlyv1alpha1.ProductObservability
 }
-
 func (m *Observability) GetOperatorNamespace() string {
 	return m.Config["OPERATOR_NAMESPACE"]
 }
@@ -67,5 +66,18 @@ func (m *Observability) GetWatchableCRDs() []runtime.Object {
 				APIVersion: oo.GroupVersion.String(),
 			},
 		},
+	}
+}
+
+func (m *Observability) GetDashboards(installType integreatlyv1alpha1.InstallationType) []string {
+	switch installType {
+	case integreatlyv1alpha1.InstallationTypeManaged, integreatlyv1alpha1.InstallationTypeSelfManaged, integreatlyv1alpha1.InstallationTypeWorkshop:
+		return rhmiTemplateList
+	case integreatlyv1alpha1.InstallationTypeManagedApi:
+		return managedAPITemplateList
+	case integreatlyv1alpha1.InstallationTypeMultitenantManagedApi:
+		return managedAPITemplateList
+	default:
+		return rhmiTemplateList
 	}
 }

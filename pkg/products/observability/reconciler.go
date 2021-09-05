@@ -22,6 +22,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/tools/record"
 	k8sclient "sigs.k8s.io/controller-runtime/pkg/client"
+
+	grafanav1alpha1 "github.com/integr8ly/grafana-operator/v3/pkg/apis/integreatly/v1alpha1"
 )
 
 const (
@@ -149,6 +151,16 @@ func (r *Reconciler) Reconcile(ctx context.Context, installation *integreatlyv1a
 	r.log.Infof("reconcilePrometheusRule", l.Fields{"phase": phase})
 	if err != nil || phase != integreatlyv1alpha1.PhaseCompleted {
 		events.HandleError(r.recorder, installation, phase, "Failed to reconcile alerts", err)
+		return phase, err
+	}
+
+	phase, err = r.reconcileDashboards(ctx, client)
+	r.log.Infof("reconcileDashboards", l.Fields{"phase": phase})
+	if err != nil || phase != integreatlyv1alpha1.PhaseCompleted {
+		if err != nil {
+			r.log.Warning("Failure reconciling dashboards " + err.Error())
+		}
+		events.HandleError(r.recorder, installation, phase, "Failed to reconcile dashboards", err)
 		return phase, err
 	}
 
@@ -299,4 +311,52 @@ func (r *Reconciler) reconcileSubscription(ctx context.Context, serverClient k8s
 
 func (r *Reconciler) preUpgradeBackupExecutor() backup.BackupExecutor {
 	return backup.NewNoopBackupExecutor()
+}
+
+func (r *Reconciler) reconcileDashboards(ctx context.Context, serverClient k8sclient.Client) (integreatlyv1alpha1.StatusPhase, error) {
+
+	for _, dashboard := range r.Config.GetDashboards(integreatlyv1alpha1.InstallationType(r.installation.Spec.Type)) {
+		err := r.reconcileGrafanaDashboards(ctx, serverClient, dashboard)
+		if err != nil {
+			return integreatlyv1alpha1.PhaseFailed, fmt.Errorf("failed to create/update grafana dashboard %s: %w", dashboard, err)
+		}
+		r.log.Infof("Reconcile successful", l.Fields{"grafanaDashboard": dashboard})
+	}
+	return integreatlyv1alpha1.PhaseCompleted, nil
+}
+
+func (r *Reconciler) reconcileGrafanaDashboards(ctx context.Context, serverClient k8sclient.Client, dashboard string) (err error) {
+
+	grafanaDB := &grafanav1alpha1.GrafanaDashboard{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      dashboard,
+			Namespace: r.Config.GetOperatorNamespace(),
+		},
+	}
+	specJSON, _, err := getSpecDetailsForDashboard(dashboard, r.installation)
+	if err != nil {
+		return err
+	}
+
+	pluginList := getPluginsForGrafanaDashboard(dashboard)
+
+	opRes, err := controllerutil.CreateOrUpdate(ctx, serverClient, grafanaDB, func() error {
+		grafanaDB.Labels = map[string]string{
+			"monitoring-key": r.Config.GetLabelSelector(),
+		}
+		grafanaDB.Spec = grafanav1alpha1.GrafanaDashboardSpec{
+			Json: specJSON,
+		}
+		if len(pluginList) > 0 {
+			grafanaDB.Spec.Plugins = pluginList
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if opRes != controllerutil.OperationResultNone {
+		r.log.Infof("Operation result", l.Fields{"grafanaDashboard": grafanaDB.Name, "result": opRes})
+	}
+	return err
 }
